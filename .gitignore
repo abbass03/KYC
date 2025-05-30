@@ -1,0 +1,9 @@
+﻿__pycache__/
+*.pyc
+venv/
+.DS_Store
+*.log
+*.tmp
+static/uploads/
+*.jpg
+*.png
