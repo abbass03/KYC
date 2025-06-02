@@ -10,7 +10,7 @@ def extract_face_from_selfie(image_path):
     """
     try:
         # Directly pass the image path to DeepFace
-        faces = DeepFace.extract_faces(img_path=image_path, detector_backend='retinaface', enforce_detection=True, expand_percentage=5)
+        faces = DeepFace.extract_faces(img_path=image_path, detector_backend='retinaface', enforce_detection=True)
 
         if faces:
             face = faces[0]["face"]

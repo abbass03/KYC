@@ -1,9 +1,59 @@
-﻿__pycache__/
-*.pyc
+﻿# Create .gitignore file
+echo "# Virtual Environments
 venv/
-.DS_Store
-*.log
-*.tmp
+venv310/
+test_venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing and Media Files
+Testing_images/
 static/uploads/
+*.mp4
 *.jpg
+*.jpeg
 *.png
+*.gif
+*.bmp
+*.tiff
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment and Config files
+.env
+.env.local
+*.cfg
+package_info.json
+
+# Logs and Debug files
+*.log
+logs/
+debug_*.jpg
+debug_*.png
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Local development settings
+instance/
+.webassets-cache
+
+# Temporary files
+tmp/
+temp/" > .gitignore

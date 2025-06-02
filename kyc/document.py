@@ -9,29 +9,41 @@ from deepface import DeepFace
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 os.environ['TESSDATA_PREFIX'] = r"C:\Program Files\Tesseract-OCR\\tessdata"
 
-# Preprocessing for MRZ (optimized, keeps color)
-def preprocess_for_mrz(image_path, output_path="static/uploads/preprocessed_mrz.jpg"):
+
+def preprocess_for_mrz(image_path, output_path="static/uploads/preprocessed_mrz_80_gray_advanced.jpg"):
     image = cv2.imread(image_path)
     if image is None:
         print(f"Error: Could not read image at {image_path}")
         return image_path  # fallback to original
 
     h = image.shape[0]
-    # Try a larger crop (bottom 40%)
+    # Crop a larger region (bottom 30%)
     mrz_region = image[int(h * 0.9):, :]
 
-    # Enhance contrast using CLAHE
-    lab = cv2.cvtColor(mrz_region, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
+    # Rotate if vertical
+    if mrz_region.shape[0] > mrz_region.shape[1]:
+        mrz_region = cv2.rotate(mrz_region, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    # Grayscale
+    mrz_region = cv2.cvtColor(mrz_region, cv2.COLOR_BGR2GRAY)
+
+    # Gentle CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    cl = clahe.apply(l)
-    limg = cv2.merge((cl,a,b))
-    mrz_region = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    mrz_region = clahe.apply(mrz_region)
+
+    # Gentle sharpening
+    kernel = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
+    mrz_region = cv2.filter2D(mrz_region, -1, kernel)
+
+    # Only apply thresholding if needed (optional)
+    # mrz_region = cv2.adaptiveThreshold(
+    #     mrz_region, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+    #     cv2.THRESH_BINARY, 11, 2
+    # )
 
     cv2.imwrite(output_path, mrz_region)
     return output_path
 
-# MRZ extraction from passport image
 def extract_mrz(image_path):
     print(f"Pytesseract command path set to: {pytesseract.pytesseract.tesseract_cmd}")
     preprocessed = preprocess_for_mrz(image_path)
@@ -47,7 +59,7 @@ def extract_face(image_path):
     """
     try:
         # Extract faces
-        faces = DeepFace.extract_faces(img_path=image_path, detector_backend='retinaface', enforce_detection=False, expand_percentage=5)
+        faces = DeepFace.extract_faces(img_path=image_path, detector_backend='retinaface', enforce_detection=False)
 
         if faces:
             face = faces[0]["face"]
