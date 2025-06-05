@@ -5,6 +5,8 @@ import numpy as np
 from werkzeug.utils import secure_filename
 from config import UPLOAD_FOLDER, ALLOWED_EXTENSIONS
 import datetime
+import imghdr
+import mimetypes
 
 logger = logging.getLogger(__name__)
 
@@ -55,3 +57,21 @@ def create_response(success, data=None, error=None, status_code=200):
     if error is not None:
         response['error'] = error
     return response, status_code
+
+def is_image_file(filepath):
+    """Check if file is a valid image (jpeg or png)."""
+    return imghdr.what(filepath) in ['jpeg', 'png']
+
+def is_video_file(filepath):
+    """Check if file is a valid video by MIME type and frame count."""
+    mime = mimetypes.guess_type(filepath)[0]
+    if mime and mime.startswith('video'):
+        # Extra check: try to open with OpenCV
+        try:
+            cap = cv2.VideoCapture(filepath)
+            ret, _ = cap.read()
+            cap.release()
+            return ret  # True if at least one frame can be read
+        except Exception:
+            return False
+    return False

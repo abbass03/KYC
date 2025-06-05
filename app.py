@@ -6,6 +6,9 @@ import logging.config
 from flask import Flask, request
 from werkzeug.utils import secure_filename
 import os
+import imghdr
+import mimetypes
+import cv2
 
 from config import (
     UPLOAD_FOLDER, API_CONFIG, LOG_CONFIG, 
@@ -16,7 +19,8 @@ from kyc.liveness import LivenessDetector
 from kyc.document import DocumentProcessor
 from kyc.utils import (
     allowed_file, save_uploaded_file, 
-    save_debug_image, create_response
+    save_debug_image, create_response,
+    is_image_file, is_video_file
 )
 
 # Configure logging
@@ -85,6 +89,16 @@ def kyc_verification():
             liveness_results
         )
 
+        # Cleanup files
+        uploaded_files = list(files.values())
+        debug_files = [
+            'static/uploads/debug_id_face.jpg',
+            'static/uploads/debug_passport_face.jpg',
+            'static/uploads/debug_selfie_face.jpg',
+            'static/uploads/debug_video_face.jpg'
+        ]
+        cleanup_files(uploaded_files + debug_files)
+
         return create_response(True, data=final_results)
 
     except Exception as e:
@@ -96,7 +110,7 @@ def kyc_verification():
         )
 
 def validate_and_save_files(request):
-    """Validate and save uploaded files."""
+    """Validate and save uploaded files, ensuring correct types."""
     required_files = ['id', 'passport', 'selfie', 'video']
     saved_files = {}
 
@@ -112,6 +126,17 @@ def validate_and_save_files(request):
 
         try:
             saved_path = save_uploaded_file(file)
+            # Content validation
+            if file_key in ['id', 'passport', 'selfie']:
+                if not is_image_file(saved_path):
+                    logger.error(f"Uploaded file for {file_key} is not a valid image.")
+                    os.remove(saved_path)
+                    return None
+            elif file_key == 'video':
+                if not is_video_file(saved_path):
+                    logger.error(f"Uploaded file for {file_key} is not a valid video.")
+                    os.remove(saved_path)
+                    return None
             saved_files[file_key] = saved_path
         except Exception as e:
             logger.error(f"Failed to save {file_key}: {str(e)}")
@@ -271,6 +296,14 @@ def compile_results(document_results, face_results, liveness_results):
         },
         "overall_status": overall_status
     }
+
+def cleanup_files(file_paths):
+    for path in file_paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            logger.warning(f"Failed to delete file {path}: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True, threaded=False)
