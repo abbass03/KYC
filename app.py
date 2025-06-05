@@ -40,7 +40,6 @@ def kyc_verification():
         return jsonify({"error": f"Failed to save uploaded files: {e}"}), 500
 
     # 3. Extract MRZ and faces
-    mrz_data = document.extract_mrz(passport_path)
     id_face = document.extract_face(id_path)
     passport_face = document.extract_face(passport_path)
     selfie_face = selfie.extract_face_from_selfie(selfie_path)
@@ -124,26 +123,22 @@ def kyc_verification():
     if not video_selfie_status:
         failed_matches.append("Video vs Selfie")
 
-    if (
-        mrz_data is not None
-        and id_selfie_status
-        and passport_selfie_status
-        and liveness_status
-        and video_selfie_status
-    ):
-        overall_status = "Verified"
-    elif mrz_data is None:
-        overall_status = "Rejected - MRZ Extraction Failed"
-    elif not liveness_status:
-        overall_status = "Rejected - Liveness Check Failed"
-    elif failed_matches:
-        overall_status = "Rejected - Face Match Failed: " + ", ".join(failed_matches)
-    else:
-        overall_status = "Rejected"
+    # 10. Passport info and verification (uses updated document.py)
+    passport_result = document.extract_passport_info_and_verify(
+        passport_path, 
+        api_key="AIzaSyCvFefseo_KYbBy0EcDfMDLKFleqeDh57Q"
+    )
 
-    # 10. Response
+    # Use the new passport_result for MRZ and visual info
     response_data = {
-        "mrz_data": mrz_data,
+        "passport_mrz_info": passport_result.get("mrz_info"),
+        "passport_visual_info": passport_result.get("visual_info"),
+        "passport_mrz_vs_visual_checks": passport_result.get("mrz_vs_visual_checks"),
+        "passport_mrz_checks": passport_result.get("mrz_checks"),
+        "passport_trust_score_mrz": passport_result.get("trust_score_mrz"),
+        "passport_trust_score_visual": passport_result.get("trust_score_visual"),
+        "passport_trust_score_combined": passport_result.get("trust_score_combined"),
+        "passport_verification_result": passport_result.get("verification_result"),
         "face_match": {
             "id_selfie": {
                 "status": id_selfie_status,
@@ -161,7 +156,22 @@ def kyc_verification():
         "liveness_detection": {
             "status": liveness_status
         },
-        "overall_status": overall_status
+        "overall_status": (
+            "Verified"
+            if (
+                passport_result.get("verification_result", {}).get("status") == "ACCEPTED"
+                and id_selfie_status
+                and passport_selfie_status
+                and liveness_status
+                and video_selfie_status
+            )
+            else (
+                "Rejected - MRZ Extraction Failed" if passport_result.get("mrz_info") is None
+                else "Rejected - Liveness Check Failed" if not liveness_status
+                else "Rejected - Face Match Failed: " + ", ".join(failed_matches) if failed_matches
+                else "Rejected"
+            )
+        )
     }
 
     return jsonify(response_data), 200

@@ -4,7 +4,9 @@ import numpy as np
 import pytesseract
 from passporteye import read_mrz
 from deepface import DeepFace
+from kyc.Mrz_processing import process_passport
 
+"""
 # Set tesseract path for both pytesseract and passporteye
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 os.environ['TESSDATA_PREFIX'] = r"C:\Program Files\Tesseract-OCR\\tessdata"
@@ -49,7 +51,7 @@ def extract_mrz(image_path):
     preprocessed = preprocess_for_mrz(image_path)
     mrz = read_mrz(preprocessed)
     return mrz.to_dict() if mrz else None
-
+"""
 # Extract face from any document (ID or passport)
 def extract_face(image_path):
     """
@@ -78,3 +80,10 @@ def extract_face(image_path):
     except Exception as e:
         print(f"[Error] Face extraction failed from {image_path}: {e}")
         return None
+    
+
+def extract_passport_info_and_verify(image_path, api_key):
+    """
+    Extracts MRZ and visual info from a passport image, compares them, and returns the result.
+    """
+    return process_passport(image_path, api_key)
