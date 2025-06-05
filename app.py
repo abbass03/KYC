@@ -1,180 +1,276 @@
-from flask import Flask, request, jsonify
-import os
-import cv2
-import numpy as np
-from kyc import document, selfie, face_match, liveness
+from dotenv import load_dotenv
+load_dotenv()
+
+import logging
+import logging.config
+from flask import Flask, request
 from werkzeug.utils import secure_filename
-from kyc.liveness import extract_face_frame_from_video, extract_face_video
+import os
 
+from config import (
+    UPLOAD_FOLDER, API_CONFIG, LOG_CONFIG, 
+    ALLOWED_EXTENSIONS, RESPONSE_MESSAGES, MAX_CONTENT_LENGTH
+)
+from kyc.face_match import FaceMatcher
+from kyc.liveness import LivenessDetector
+from kyc.document import DocumentProcessor
+from kyc.utils import (
+    allowed_file, save_uploaded_file, 
+    save_debug_image, create_response
+)
+
+# Configure logging
+logging.config.dictConfig(LOG_CONFIG)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
 app = Flask(__name__)
-UPLOAD_FOLDER = 'static/uploads'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+# Initialize KYC components
+face_matcher = FaceMatcher()
+liveness_detector = LivenessDetector()
+document_processor = DocumentProcessor()
 
 @app.route('/kyc', methods=['POST'])
 def kyc_verification():
-    # 1. Check uploaded files
+    """
+    Main KYC verification endpoint that processes:
+    1. Document verification (ID and passport)
+    2. Face matching
+    3. Liveness detection
+    """
+    try:
+        # 1. Validate and save uploaded files
+        files = validate_and_save_files(request)
+        if not files:
+            return create_response(
+                False, 
+                error=RESPONSE_MESSAGES['MISSING_FILE'].format('Required files'),
+                status_code=400
+            )
+
+        # 2. Process documents
+        document_results = process_documents(files)
+        if not document_results['success']:
+            return create_response(
+                False,
+                error=document_results['error'],
+                status_code=400
+            )
+
+        # 3. Process face matching
+        face_results = process_face_matching(files, document_results['faces'])
+        if not face_results['success']:
+            return create_response(
+                False,
+                error=face_results['error'],
+                status_code=400
+            )
+
+        # 4. Process liveness
+        liveness_results = process_liveness(files['video'])
+        if not liveness_results['success']:
+            return create_response(
+                False,
+                error=liveness_results['error'],
+                status_code=400
+            )
+
+        # 5. Compile final results
+        final_results = compile_results(
+            document_results, 
+            face_results, 
+            liveness_results
+        )
+
+        return create_response(True, data=final_results)
+
+    except Exception as e:
+        logger.error(f"KYC verification failed: {str(e)}")
+        return create_response(
+            False,
+            error=str(e),
+            status_code=500
+        )
+
+def validate_and_save_files(request):
+    """Validate and save uploaded files."""
     required_files = ['id', 'passport', 'selfie', 'video']
+    saved_files = {}
+
     for file_key in required_files:
-        if file_key not in request.files or request.files[file_key].filename == '':
-            return jsonify({"error": f"Missing or empty file: {file_key}"}), 400
+        if file_key not in request.files:
+            logger.error(f"Missing file: {file_key}")
+            return None
+        
+        file = request.files[file_key]
+        if file.filename == '' or not allowed_file(file.filename):
+            logger.error(f"Invalid file: {file_key}")
+            return None
 
-    # 2. Save uploaded files
-    id_file = request.files['id']
-    passport_file = request.files['passport']
-    selfie_file = request.files['selfie']
-    video_file = request.files['video']
+        try:
+            saved_path = save_uploaded_file(file)
+            saved_files[file_key] = saved_path
+        except Exception as e:
+            logger.error(f"Failed to save {file_key}: {str(e)}")
+            return None
 
-    id_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(id_file.filename))
-    passport_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(passport_file.filename))
-    selfie_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(selfie_file.filename))
-    video_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(video_file.filename))
+    return saved_files
 
+def process_documents(files):
+    """Process ID and passport documents."""
     try:
-        id_file.save(id_path)
-        passport_file.save(passport_path)
-        selfie_file.save(selfie_path)
-        video_file.save(video_path)
+        # Extract faces from documents
+        id_face = document_processor.extract_face(files['id'])
+        passport_face = document_processor.extract_face(files['passport'])
+        selfie_face = document_processor.extract_face(files['selfie'])
+
+        # Save debug images
+        save_debug_image(id_face, 'debug_id_face.jpg')
+        save_debug_image(passport_face, 'debug_passport_face.jpg')
+        save_debug_image(selfie_face, 'debug_selfie_face.jpg')
+
+        # Process passport information
+        passport_result = document_processor.process_passport(
+            files['passport'],
+            api_key=os.getenv('GOOGLE_API_KEY')
+        )
+
+        # Compare ID and passport documents
+        document_comparison = document_processor.compare_documents(
+            files['id'],
+            files['passport']
+        )
+
+        if not document_comparison['success']:
+            return {
+                'success': False,
+                'error': document_comparison['error']
+            }
+
+        return {
+            'success': True,
+            'faces': {
+                'id': id_face,
+                'passport': passport_face,
+                'selfie': selfie_face
+            },
+            'passport_info': passport_result,
+            'document_comparison': document_comparison['comparison']
+        }
+
     except Exception as e:
-        return jsonify({"error": f"Failed to save uploaded files: {e}"}), 500
+        logger.error(f"Document processing failed: {str(e)}")
+        return {
+            'success': False,
+            'error': RESPONSE_MESSAGES['EXTRACTION_ERROR'].format(str(e))
+        }
 
-    # 3. Extract MRZ and faces
-    id_face = document.extract_face(id_path)
-    passport_face = document.extract_face(passport_path)
-    selfie_face = selfie.extract_face_from_selfie(selfie_path)
-
-    # 4. Save debug images
-    def save_debug(face, filename):
-        if face is not None and face.shape[-1] == 3:
-            cv2.imwrite(os.path.join(app.config['UPLOAD_FOLDER'], filename), face)
-
-    save_debug(id_face, 'debug_id_face.jpg')
-    save_debug(passport_face, 'debug_passport_face.jpg')
-    save_debug(selfie_face, 'debug_selfie_face.jpg')
-
-    # 5. Face matching
-    face_match_threshold = 0.5
-
-    # ID vs Selfie
-    id_selfie_score = -1
-    id_selfie_status = False
-    if id_face is not None and selfie_face is not None:
-        try:
-            distance = face_match.compare_faces(id_face, selfie_face)
-            if distance is not None:
-                id_selfie_score = distance
-                id_selfie_status = distance < face_match_threshold
-        except Exception as e:
-            print(f"ID vs Selfie match failed: {e}")
-            id_selfie_status = False
-            id_selfie_score = -1
-
-    # Passport vs Selfie
-    passport_selfie_score = -1
-    passport_selfie_status = False
-    if passport_face is not None and selfie_face is not None:
-        try:
-            distance = face_match.compare_faces(passport_face, selfie_face)
-            if distance is not None:
-                passport_selfie_score = distance
-                passport_selfie_status = distance < face_match_threshold
-        except Exception as e:
-            print(f"Passport vs Selfie match failed: {e}")
-            passport_selfie_status = False
-            passport_selfie_score = -1
-
-    # 6. Liveness
+def process_face_matching(files, faces):
+    """Process face matching between documents and selfie."""
     try:
-        liveness_status = liveness.check_liveness(video_path)
+        # ID vs Selfie
+        id_selfie_status, id_selfie_score = face_matcher.is_match(
+            faces['id'], 
+            faces['selfie']
+        )
+
+        # Passport vs Selfie
+        passport_selfie_status, passport_selfie_score = face_matcher.is_match(
+            faces['passport'], 
+            faces['selfie']
+        )
+
+        return {
+            'success': True,
+            'matches': {
+                'id_selfie': {
+                    'status': id_selfie_status,
+                    'score': id_selfie_score
+                },
+                'passport_selfie': {
+                    'status': passport_selfie_status,
+                    'score': passport_selfie_score
+                }
+            }
+        }
+
     except Exception as e:
-        print(f"Liveness detection failed: {e}")
-        liveness_status = False
+        logger.error(f"Face matching failed: {str(e)}")
+        return {
+            'success': False,
+            'error': RESPONSE_MESSAGES['FACE_MATCH_FAILED'].format(str(e))
+        }
 
-    # 7. Extract frame from video and then extract face from that frame
-    video_frame = extract_face_frame_from_video(video_path)
-    save_debug(video_frame, 'debug_video_face.jpg')
+def process_liveness(video_path):
+    """Process liveness detection from video."""
+    try:
+        # Check liveness
+        liveness_status = liveness_detector.check_liveness(video_path)
 
-    video_face = None
-    if video_frame is not None:
-        video_face = liveness.extract_face_video(video_frame)
-        save_debug(video_face, 'debug_video_face_cropped.jpg')
+        # Extract face from video
+        video_frame = liveness_detector.extract_face_frame_from_video(video_path)
+        video_face = None
+        if video_frame is not None:
+            video_face = liveness_detector.extract_face_video(video_frame)
+            save_debug_image(video_face, 'debug_video_face.jpg')
 
-    # 8. Compare video face with selfie face
-    video_selfie_score = -1
-    video_selfie_status = False
-    if video_face is not None and selfie_face is not None:
-        try:
-            distance = face_match.compare_faces(video_face, selfie_face)
-            if distance is not None:
-                video_selfie_score = distance
-                video_selfie_status = distance < face_match_threshold
-        except Exception as e:
-            print(f"Video vs Selfie match failed: {e}")
-            video_selfie_status = False
-            video_selfie_score = -1
+        return {
+            'success': True,
+            'status': liveness_status,
+            'video_face': video_face
+        }
 
-    # 9. Status
-    failed_matches = []
-    if not id_selfie_status:
-        failed_matches.append("ID vs Selfie")
-    if not passport_selfie_status:
-        failed_matches.append("Passport vs Selfie")
-    if not video_selfie_status:
-        failed_matches.append("Video vs Selfie")
+    except Exception as e:
+        logger.error(f"Liveness detection failed: {str(e)}")
+        return {
+            'success': False,
+            'error': RESPONSE_MESSAGES['LIVENESS_FAILED']
+        }
 
-    # 10. Passport info and verification (uses updated document.py)
-    passport_result = document.extract_passport_info_and_verify(
-        passport_path, 
-        api_key="AIzaSyCvFefseo_KYbBy0EcDfMDLKFleqeDh57Q"
-    )
+def compile_results(document_results, face_results, liveness_results):
+    """Compile final verification results."""
+    passport_info = document_results['passport_info']
+    face_matches = face_results['matches']
+    video_face = liveness_results.get('video_face')
+    selfie_face = document_results['faces']['selfie']
+    document_comparison = document_results['document_comparison']
 
-    # Use the new passport_result for MRZ and visual info
-    response_data = {
-        "passport_mrz_info": passport_result.get("mrz_info"),
-        "passport_visual_info": passport_result.get("visual_info"),
-        "passport_mrz_vs_visual_checks": passport_result.get("mrz_vs_visual_checks"),
-        "passport_mrz_checks": passport_result.get("mrz_checks"),
-        "passport_trust_score_mrz": passport_result.get("trust_score_mrz"),
-        "passport_trust_score_visual": passport_result.get("trust_score_visual"),
-        "passport_trust_score_combined": passport_result.get("trust_score_combined"),
-        "passport_verification_result": passport_result.get("verification_result"),
+    # Add video vs selfie comparison
+    video_selfie_status, video_selfie_score = face_matcher.is_match(video_face, selfie_face) if (video_face is not None and selfie_face is not None) else (False, -1)
+
+    # Check if all document fields match
+    all_fields_match = all(
+        field['match'] for field in document_comparison.values()
+    ) if document_comparison else False
+
+    # Determine overall status
+    overall_status = "Verified" if all([
+        passport_info['verification_result']['status'] == "ACCEPTED",
+        face_matches['id_selfie']['status'],
+        face_matches['passport_selfie']['status'],
+        liveness_results['status'],
+        video_selfie_status,
+        all_fields_match
+    ]) else "Rejected"
+
+    return {
+        "passport_info": passport_info,
+        "document_comparison": document_comparison,
         "face_match": {
-            "id_selfie": {
-                "status": id_selfie_status,
-                "score": id_selfie_score
-            },
-            "passport_selfie": {
-                "status": passport_selfie_status,
-                "score": passport_selfie_score
-            },
+            **face_matches,
             "video_selfie": {
                 "status": video_selfie_status,
                 "score": video_selfie_score
             }
         },
         "liveness_detection": {
-            "status": liveness_status
+            "status": liveness_results['status']
         },
-        "overall_status": (
-            "Verified"
-            if (
-                passport_result.get("verification_result", {}).get("status") == "ACCEPTED"
-                and id_selfie_status
-                and passport_selfie_status
-                and liveness_status
-                and video_selfie_status
-            )
-            else (
-                "Rejected - MRZ Extraction Failed" if passport_result.get("mrz_info") is None
-                else "Rejected - Liveness Check Failed" if not liveness_status
-                else "Rejected - Face Match Failed: " + ", ".join(failed_matches) if failed_matches
-                else "Rejected"
-            )
-        )
+        "overall_status": overall_status
     }
-
-    return jsonify(response_data), 200
 
 if __name__ == '__main__':
     app.run(debug=True, threaded=False)
