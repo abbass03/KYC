@@ -1,57 +1,56 @@
-import logging
-from deepface import DeepFace
-from config import API_CONFIG
-from .utils import normalize_image
+import cv2
 import numpy as np
+from PIL import Image
+from deepface import DeepFace
+import logging
 
 logger = logging.getLogger(__name__)
 
 class FaceMatcher:
-    def __init__(self, threshold=None):
-        self.threshold = threshold or API_CONFIG['FACE_MATCH_THRESHOLD']
-
-    def compare_faces(self, face1, face2):
+    def __init__(self):
+        self.face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    
+    def is_match(self, face1, face2, threshold=0.6):
         """
-        Compare two face images and return the distance score.
+        Compare two face images and determine if they match using DeepFace.
         
         Args:
-            face1: First face image (numpy array or path)
-            face2: Second face image (numpy array or path)
+            face1: First face image (numpy array)
+            face2: Second face image (numpy array)
+            threshold: Matching threshold (default: 0.6)
             
         Returns:
-            float: Distance score between faces, or None if comparison fails
+            tuple: (is_match: bool, confidence_score: float)
         """
         try:
-            # Normalize images if they are numpy arrays
-            if isinstance(face1, np.ndarray):
-                face1 = normalize_image(face1)
-            if isinstance(face2, np.ndarray):
-                face2 = normalize_image(face2)
-
+            # Input validation
+            if face1 is None or face2 is None:
+                logger.error("One or both face images are None")
+                return False, 0.0
+                
+            # Convert images to RGB if they're not already
+            if len(face1.shape) == 2:  # If grayscale
+                face1 = cv2.cvtColor(face1, cv2.COLOR_GRAY2RGB)
+            if len(face2.shape) == 2:  # If grayscale
+                face2 = cv2.cvtColor(face2, cv2.COLOR_GRAY2RGB)
+            
+            # Use DeepFace to verify faces
             result = DeepFace.verify(
                 face1, 
                 face2, 
-                enforce_detection=False,
-                detector_backend='retinaface'
+                model_name="ArcFace",  # You can also use "Facenet", "Facenet512", "OpenFace", "DeepFace", "DeepID", "ArcFace", "Dlib"
+                detector_backend="retinaface",  # You can also use "ssd", "dlib", "mtcnn", "retinaface"
+                enforce_detection=True,
+                silent=True
             )
             
-            return result['distance']
-        except Exception as e:
-            logger.error(f"Face comparison failed: {str(e)}")
-            return None
-
-    def is_match(self, face1, face2):
-        """
-        Check if two faces match based on the threshold.
-        
-        Args:
-            face1: First face image
-            face2: Second face image
+            # Get similarity score
+            similarity_score = result['distance']  # DeepFace returns distance, convert to similarity
+            is_match = result['verified']
             
-        Returns:
-            tuple: (bool, float) - (is_match, distance_score)
-        """
-        distance = self.compare_faces(face1, face2)
-        if distance is None:
-            return False, -1
-        return distance < self.threshold, distance
+            logger.info(f"Face match result: {is_match} (score: {similarity_score:.2f})")
+            return is_match, similarity_score
+            
+        except Exception as e:
+            logger.error(f"Error in face matching: {str(e)}")
+            return False

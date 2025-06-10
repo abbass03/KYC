@@ -9,7 +9,6 @@ import imghdr
 import mimetypes
 
 logger = logging.getLogger(__name__)
-
 def allowed_file(filename):
     """Check if the file extension is allowed."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS

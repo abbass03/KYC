@@ -2,12 +2,10 @@ import os
 import cv2
 import numpy as np
 import pytesseract
-from passporteye import read_mrz
 from deepface import DeepFace
 from kyc.Mrz_processing import process_passport
 import logging
 from .utils import normalize_image
-import google.generativeai as genai
 import json
 import re
 from PIL import Image
@@ -17,18 +15,7 @@ logger = logging.getLogger(__name__)
 class DocumentProcessor:
     def __init__(self):
         self.detector_backend = 'retinaface'
-        self.single_doc_prompt = """
-Extract the following fields from this identity document:
-- First name
-- Last name
-- Father's full name
-- Mother's full name
-- Date of birth
-
-If a field appears in two languages (e.g., Arabic and English), return both as a list.
-Respond as a JSON object with keys: first_name, last_name, father_full_name, mother_full_name, date_of_birth.
-Use the exact original spelling and formatting from the document. Do not translate or clean anything.
-"""
+        self.single_doc_prompt = None  # No LLM prompt needed
 
     def resize_image(self, input_path, output_path, max_width=1024):
         """Resize image if it's too large."""
@@ -50,18 +37,8 @@ Use the exact original spelling and formatting from the document. Do not transla
             }
 
     def extract_fields_from_image(self, image_part, prompt_template):
-        """Extract fields from an image using Gemini."""
-        model = genai.GenerativeModel(model_name="gemini-2.0-flash")
-        response = model.generate_content([prompt_template, image_part], stream=False)
-        raw_text = response.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = re.sub(r"^```[a-zA-Z]*\n?", "", raw_text)
-            raw_text = re.sub(r"\n?```$", "", raw_text)
-        try:
-            return json.loads(raw_text)
-        except Exception as e:
-            logger.error(f"Failed to parse JSON from Gemini response: {str(e)}")
-            return None
+        # No LLM extraction, return None or placeholder
+        return None
 
     def normalize_value(self, val, field=None):
         """Normalize field values for comparison."""
@@ -104,68 +81,7 @@ Use the exact original spelling and formatting from the document. Do not transla
                 return f"20{digits[2]}{digits[1]}{digits[0]}"
         return "".join(digits)
 
-    def compare_documents(self, id_path, passport_path):
-        """
-        Compare ID and passport documents for field matching.
-        
-        Args:
-            id_path: Path to ID document image
-            passport_path: Path to passport document image
-            
-        Returns:
-            dict: Comparison results for each field
-        """
-        try:
-            # Resize images if needed
-            id_path = self.resize_image(id_path, id_path)
-            passport_path = self.resize_image(passport_path, passport_path)
-
-            # Load images for Gemini
-            id_image_part = self.load_image_as_part(id_path)
-            passport_image_part = self.load_image_as_part(passport_path)
-
-            # Extract fields from both documents
-            id_info = self.extract_fields_from_image(id_image_part, self.single_doc_prompt)
-            passport_info = self.extract_fields_from_image(passport_image_part, self.single_doc_prompt)
-
-            if id_info is None or passport_info is None:
-                return {
-                    'success': False,
-                    'error': 'Failed to extract information from one or both documents'
-                }
-
-            # Compare fields
-            fields = ["first_name", "last_name", "father_full_name", "mother_full_name", "date_of_birth"]
-            comparison = {}
-            
-            for field in fields:
-                id_val = id_info.get(field)
-                pass_val = passport_info.get(field)
-                id_norm = self.normalize_value(id_val, field)
-                pass_norm = self.normalize_value(pass_val, field)
-                
-                match = (
-                    any(i in pass_norm for i in id_norm) or
-                    any(i in id_norm for i in pass_norm)
-                ) if id_norm and pass_norm else None
-                
-                comparison[field] = {
-                    "id": id_val,
-                    "passport": pass_val,
-                    "match": match
-                }
-
-            return {
-                'success': True,
-                'comparison': comparison
-            }
-
-        except Exception as e:
-            logger.error(f"Document comparison failed: {str(e)}")
-            return {
-                'success': False,
-                'error': f'Document comparison failed: {str(e)}'
-            }
+    # Comment out compare_documents method and any call to it or use of document_comparison
 
     def extract_face(self, image_path):
         """
@@ -196,7 +112,7 @@ Use the exact original spelling and formatting from the document. Do not transla
             logger.error(f"Face extraction failed: {str(e)}")
             return None
 
-    def process_passport(self, image_path, api_key):
+    def process_passport(self, image_path, api_key=None):
         """
         Process passport image to extract and verify information.
         
@@ -208,7 +124,7 @@ Use the exact original spelling and formatting from the document. Do not transla
             dict: Passport processing results
         """
         try:
-            return process_passport(image_path, api_key)
+            return process_passport(image_path)
         except Exception as e:
             logger.error(f"Passport processing failed: {str(e)}")
             return {

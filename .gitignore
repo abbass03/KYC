@@ -1,11 +1,14 @@
 ﻿# Create .gitignore file
-echo "# Virtual Environments
+echo "# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
 venv/
 venv310/
 test_venv/
-**/__pycache__/
-*.py[cod]
-*$py.class
+test_env/
 
 # Testing and Media Files
 Testing_images/
@@ -17,6 +20,8 @@ static/uploads/
 *.gif
 *.bmp
 *.tiff
+preprocessed_mrz*.jpg
+preprocessed_mrz*.png
 
 # IDE and Editor files
 .vscode/

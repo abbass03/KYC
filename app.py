@@ -158,22 +158,10 @@ def process_documents(files):
         save_debug_image(selfie_face, 'debug_selfie_face.jpg')
 
         # Process passport information
-        passport_result = document_processor.process_passport(
-            files['passport'],
-            api_key=os.getenv('GOOGLE_API_KEY')
-        )
+        passport_result = document_processor.process_passport(files['passport'])
 
         # Compare ID and passport documents
-        document_comparison = document_processor.compare_documents(
-            files['id'],
-            files['passport']
-        )
-
-        if not document_comparison['success']:
-            return {
-                'success': False,
-                'error': document_comparison['error']
-            }
+        # document_comparison = document_processor.compare_documents(files['id'], files['passport'])
 
         return {
             'success': True,
@@ -183,7 +171,7 @@ def process_documents(files):
                 'selfie': selfie_face
             },
             'passport_info': passport_result,
-            'document_comparison': document_comparison['comparison']
+            # 'document_comparison': document_comparison['comparison']
         }
 
     except Exception as e:
@@ -261,29 +249,29 @@ def compile_results(document_results, face_results, liveness_results):
     face_matches = face_results['matches']
     video_face = liveness_results.get('video_face')
     selfie_face = document_results['faces']['selfie']
-    document_comparison = document_results['document_comparison']
+    # document_comparison = document_results['document_comparison']
 
     # Add video vs selfie comparison
     video_selfie_status, video_selfie_score = face_matcher.is_match(video_face, selfie_face) if (video_face is not None and selfie_face is not None) else (False, -1)
 
     # Check if all document fields match
-    all_fields_match = all(
-        field['match'] for field in document_comparison.values()
-    ) if document_comparison else False
+ ##   all_fields_match = all(
+ ##       field['match'] for field in document_comparison.values()
+ ##   ) if document_comparison else False
 
     # Determine overall status
     overall_status = "Verified" if all([
-        passport_info['verification_result']['status'] == "ACCEPTED",
+        passport_info['status'] == "SUCCESS",
         face_matches['id_selfie']['status'],
         face_matches['passport_selfie']['status'],
         liveness_results['status'],
         video_selfie_status,
-        all_fields_match
+   ##     all_fields_match
     ]) else "Rejected"
 
     return {
         "passport_info": passport_info,
-        "document_comparison": document_comparison,
+        # 'document_comparison': document_comparison,
         "face_match": {
             **face_matches,
             "video_selfie": {

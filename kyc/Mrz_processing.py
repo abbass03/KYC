@@ -1,13 +1,11 @@
-from passporteye import read_mrz
-from google import generativeai as genai
+import easyocr
+import cv2
 import re
 from datetime import datetime
 import logging
 import json
 import string
 import unicodedata
-import cv2
-
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -261,19 +259,6 @@ FIELDS_TO_COMPARE = [
 def is_valid_country_code(code):
     return code in ICAO_COUNTRY_CODES
 
-def is_mrz_valid_in_image(image_path):
-    try:
-        mrz_obj = read_mrz(image_path)
-        if mrz_obj is not None and mrz_obj.valid:
-            logger.info("Valid MRZ found in image.")
-            return True, mrz_obj
-        else:
-            logger.warning("No valid MRZ found in image.")
-            return False, None
-    except Exception as e:
-        logger.error(f"Error in MRZ validation: {str(e)}")
-        return False, None
-
 def validate_date_format(date_str):
     try:
         if len(date_str) != 6:
@@ -295,33 +280,6 @@ def validate_passport_number(number):
         return False
     # Check if it contains only alphanumeric characters
     return bool(re.match(r'^[A-Z0-9]+$', number))
-
-def retrieve_passport_mrz(image_path: str, api_key: str) -> str:
-    try:
-        genai.configure(api_key=api_key)
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
-        
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        prompt_text = (
-            "You are an expert system designed to extract the Machine Readable Zone (MRZ) from a passport image. "
-            "Return only the MRZ lines, each on a new line, with no extra text or explanation. "
-            "Ensure the output is in the correct format with proper spacing and characters."
-        )
-        
-        response = model.generate_content(
-            contents=[{
-                "role": "user",
-                "parts": [
-                    {"text": prompt_text},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}}
-                ]
-            }]
-        )
-        return response.text.strip()
-    except Exception as e:
-        logger.error(f"Error in LLM MRZ extraction: {str(e)}")
-        return None
 
 def compute_icao_check_digit(data):
     weights = [7, 3, 1]
@@ -482,11 +440,81 @@ def calculate_trust_score(results):
     max_score = len(results)
     return score / max_score  # Returns a value between 0 and 1
 
+def preprocess_mrz_region(image_path):
+    img = cv2.imread(image_path)
+    if img is None:
+        logger.error("❌ Could not read the image for preprocessing.")
+        return image_path
+    h = img.shape[0]
+    mrz = img[int(h*0.8):, :]
+   ## mrz = cv2.cvtColor(mrz, cv2.COLOR_BGR2GRAY)
+   ## mrz = cv2.equalizeHist(mrz)
+   ## mrz = cv2.adaptiveThreshold(mrz, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+   ## mrz = cv2.medianBlur(mrz, 3)
+    temp_path = "preprocessed_mrz.jpg"
+    cv2.imwrite(temp_path, mrz)
+    return temp_path
+
+def extract_mrz_easyocr(image_path):
+    preprocessed_path = preprocess_mrz_region(image_path)
+    reader = easyocr.Reader(['en'])
+    image = cv2.imread(preprocessed_path)
+    if image is None:
+        logger.error("❌ Could not read the image.")
+        return None
+    results = reader.readtext(image, detail=0, paragraph=True)
+    if results:
+        logger.info("✅ MRZ text found by EasyOCR")
+        mrz_text = "\n".join(results)
+        return mrz_text
+    else:
+        logger.error("❌ No MRZ found in the image.")
+        return None
+
+def split_mrz_line(mrz):
+    mrz = mrz.replace(' ', '').replace('\n', '')
+    if len(mrz) >= 88:
+        return mrz[:44], mrz[44:88]
+    idx = mrz.rfind('<<<<', 30, 60)
+    if idx != -1:
+        line1 = mrz[:idx+4]
+        line2 = mrz[idx+4:]
+        line1 = line1.ljust(44, '<')[:44]
+        line2 = line2.ljust(44, '<')[:44]
+        return line1, line2
+    line1 = mrz[:44].ljust(44, '<')[:44]
+    line2 = mrz[44:88].ljust(44, '<')[:44]
+    return line1, line2
+
+def extract_mrz_lines_from_text(text):
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    mrz_candidates = []
+    for line in lines:
+        if line.startswith('P<') or (len(line) >= 30 and '<' in line):
+            mrz_candidates.append(line.replace(' ', '').replace('\n', ''))
+    if len(mrz_candidates) == 1:
+        l = mrz_candidates[0]
+        if len(l) >= 60:
+            line1, line2 = split_mrz_line(l)
+            return line1 + '\n' + line2
+    if len(mrz_candidates) == 2:
+        line1 = mrz_candidates[0].ljust(44, '<')[:44]
+        line2 = mrz_candidates[1].ljust(44, '<')[:44]
+        return line1 + '\n' + line2
+    for i in range(len(mrz_candidates)-1):
+        if len(mrz_candidates[i]) == 44 and len(mrz_candidates[i+1]) == 44:
+            return mrz_candidates[i] + '\n' + mrz_candidates[i+1]
+    if mrz_candidates:
+        line1 = mrz_candidates[0].ljust(44, '<')[:44]
+        line2 = mrz_candidates[1].ljust(44, '<')[:44] if len(mrz_candidates) > 1 else '<'*44
+        return line1 + '\n' + line2
+    return ''
+
 def manual_parse_mrz(mrz_string):
     try:
         lines = [line.strip() for line in mrz_string.splitlines() if line.strip()]
         if len(lines) == 2:
-            if len(lines[0]) == 44 and len(lines[1]) == 44:  # TD3 (passport)
+            if len(lines[0]) == 44 and len(lines[1]) == 44:
                 l1, l2 = lines
                 l1 = l1.ljust(44, '<')
                 l2 = l2.ljust(44, '<')
@@ -542,235 +570,37 @@ def manual_parse_mrz(mrz_string):
                     "composite_check": l2[43],
                     "validation_checks": checks
                 }
-            elif len(lines[0]) == 36 and len(lines[1]) == 36:  # TD2 (rare, some passports/visas)
-                l1, l2 = lines
-                l1 = l1.ljust(36, '<')
-                l2 = l2.ljust(36, '<')
-                passport_number = l2[0:9].replace("<", "")
-                birth_date = l2[13:19]
-                expiry_date = l2[21:27]
-                if not validate_date_format(birth_date):
-                    logger.warning("Invalid birth date format (TD2)")
-                    return None
-                if not validate_date_format(expiry_date):
-                    logger.warning("Invalid expiry date format (TD2)")
-                    return None
-                if not validate_passport_number(passport_number):
-                    logger.warning("Invalid passport number format (TD2)")
-                    return None
-                optional_data_raw = l2[28:35]
-                optional_data_check_digit = l2[35]
-                if optional_data_raw.replace('<', '') == '':
-                    optional_data_check_result = True
-                else:
-                    optional_data_check_result = validate_check_digit(optional_data_raw, optional_data_check_digit)
-                checks = {
-                    'birth_date_format': validate_date_format(birth_date),
-                    'expiry_date_format': validate_date_format(expiry_date),
-                    'passport_number_format': validate_passport_number(passport_number),
-                    'passport_number_check': validate_check_digit(l2[0:9], l2[9]),
-                    'birth_date_check': validate_check_digit(l2[13:19], l2[19]),
-                    'expiry_date_check': validate_check_digit(l2[21:27], l2[27]),
-                    'optional_data_check': optional_data_check_result,
-                    'composite_check': validate_composite_check_td2(l2),
-                    'country_code_check': is_valid_country_code(l1[2:5])
-                }
-                logger.info(f"TD2 MRZ validation results: {checks}")
-                return {
-                    "mrz_type": "TD2",
-                    "document_type": l1[0],
-                    "country": l1[2:5],
-                    "surname": l1[5:l1.find("<<")].replace("<", " ").strip(),
-                    "given_names": l1[l1.find("<<")+2:].replace("<", " ").strip(),
-                    "passport_number": passport_number,
-                    "passport_number_check": l2[9],
-                    "nationality": l2[10:13],
-                    "birth_date": birth_date,
-                    "birth_date_check": l2[19],
-                    "sex": l2[20],
-                    "expiry_date": expiry_date,
-                    "expiry_date_check": l2[27],
-                    "optional_data": l2[28:35].replace("<", ""),
-                    "optional_data_check": l2[35],
-                    "composite_check": l2[35],
-                    "validation_checks": checks
-                }
             else:
                 logger.warning(f"Invalid MRZ line lengths for 2-line MRZ: {len(lines[0])}, {len(lines[1])}")
                 return None
-        elif len(lines) == 3:  # TD1 (ID card/passport)
-            l1, l2, l3 = lines
-            l1 = l1.ljust(30, '<')
-            l2 = l2.ljust(30, '<')
-            l3 = l3.ljust(30, '<')
-            document_number = l1[5:14].replace("<", "")
-            birth_date = l2[0:6]
-            expiry_date = l2[8:14]
-            if not validate_date_format(birth_date):
-                logger.warning("Invalid birth date format (TD1)")
-                return None
-            if not validate_date_format(expiry_date):
-                logger.warning("Invalid expiry date format (TD1)")
-                return None
-            if not validate_passport_number(document_number):
-                logger.warning("Invalid document number format (TD1)")
-                return None
-            optional_data2_raw = l2[18:29]
-            optional_data2_check_digit = l2[29]
-            if optional_data2_raw.replace('<', '') == '':
-                optional_data2_check_result = True
-            else:
-                optional_data2_check_result = validate_check_digit(optional_data2_raw, optional_data2_check_digit)
-            checks = {
-                'birth_date_format': validate_date_format(birth_date),
-                'expiry_date_format': validate_date_format(expiry_date),
-                'document_number_format': validate_passport_number(document_number),
-                'document_number_check': validate_check_digit(l1[5:14], l1[14]),
-                'birth_date_check': validate_check_digit(l2[0:6], l2[6]),
-                'expiry_date_check': validate_check_digit(l2[8:14], l2[14]),
-                'optional_data2_check': optional_data2_check_result,
-                'composite_check': validate_composite_check_td1(l1, l2),
-                'country_code_check': is_valid_country_code(l1[2:5])
-            }
-            logger.info(f"TD1 MRZ validation results: {checks}")
-            return {
-                "mrz_type": "TD1",
-                "document_type": l1[0],
-                "country": l1[2:5],
-                "document_number": document_number,
-                "document_number_check": l1[14],
-                "optional_data1": l1[15:30].replace("<", ""),
-                "birth_date": birth_date,
-                "birth_date_check": l2[6],
-                "sex": l2[7],
-                "expiry_date": expiry_date,
-                "expiry_date_check": l2[14],
-                "nationality": l2[15:18],
-                "optional_data2": l2[18:29].replace("<", ""),
-                "optional_data2_check": l2[29],
-                "composite_check": l2[29],
-                "surname": l3.split("<<")[0].replace("<", " ").strip(),
-                "given_names": " ".join(l3.split("<<")[1:]).replace("<", " ").strip() if "<<" in l3 else "",
-                "validation_checks": checks
-            }
         else:
-            logger.warning(f"Invalid number of MRZ lines: {len(lines)} (not TD3, TD2, or TD1)")
+            logger.warning(f"Invalid number of MRZ lines: {len(lines)}")
             return None
     except Exception as e:
         logger.error(f"Error in passport MRZ parsing: {str(e)}")
         return None
 
-def determine_verification_result(trust_score, threshold=0.9):
+def process_passport(image_path, api_key=None):
     """
-    Determine whether to accept or reject the passport based on trust score.
-    Args:
-        trust_score (float): Score between 0 and 1
-        threshold (float): Minimum score required for acceptance (default 0.8)
-    Returns:
-        dict: Verification result with status and details
+    Extracts MRZ info from a passport image using EasyOCR, parses and validates it, and returns the result.
     """
-    if trust_score >= threshold:
-        return {
-            "status": "ACCEPTED",
-            "trust_score": trust_score,
-            "message": "Document verification passed"
-        }
-    else:
-        return {
-            "status": "REJECTED",
-            "trust_score": trust_score,
-            "message": "Document verification failed - trust score below threshold"
-        }
-
-def extract_passport_visual_info(image_path: str, api_key: str) -> dict:
-    """
-    Extract visible (printed) info from the passport page using Gemini AI.
-    """
-    try:
-        genai.configure(api_key=api_key)
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
-        prompt_text = (
-            "You are an expert at reading passports. Extract all visible information from the main (photo) page of this passport, "
-            "including but not limited to: Full Name, Given Names, Surname, Nationality, Date of Birth, Place of Birth, Sex, Passport Number, "
-            "Date of Issue, Date of Expiry, Issuing Authority. "
-            "Return the information as a JSON object with English field names. "
-            "If any field is not visible, mark it as 'Not Available'."
-        )
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(
-            contents=[{
-                "role": "user",
-                "parts": [
-                    {"text": prompt_text},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}}
-                ]
-            }]
-        )
-        response_text = response.text.strip().replace('```json', '').replace('```', '').strip()
-        return json.loads(response_text)
-    except Exception as e:
-        logger.error(f"Error extracting visual passport info: {str(e)}")
-        return None
-
-def preprocess_for_mrz(image_path):
-    image = cv2.imread(image_path)
-    if image is None:
-        return image_path  # fallback
-
-    h = image.shape[0]
-    # Crop bottom 20% (adjust as needed)
-    mrz_region = image[int(h * 0.8):, :]
-    mrz_region = cv2.cvtColor(mrz_region, cv2.COLOR_BGR2GRAY)
-    mrz_region = cv2.adaptiveThreshold(mrz_region, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    temp_path = "static/uploads/preprocessed_mrz.jpg"
-    cv2.imwrite(temp_path, mrz_region)
-    return temp_path
-
-def process_passport(image_path, api_key):
-    """
-    Extracts MRZ and visual info from a passport image, compares them, and returns the result.
-    Uses LLM to extract MRZ, then parses and validates it, and compares with visual info.
-    Reports MRZ and visual-vs-MRZ trust scores separately.
-    """
-    # 1. Use LLM to extract MRZ from the image
-    mrz_string = retrieve_passport_mrz(image_path, api_key)
+    mrz_string = extract_mrz_easyocr(image_path)
     if not mrz_string:
         return {
             "status": "REJECTED",
-            "message": "Failed to extract MRZ using LLM"
+            "message": "Failed to extract MRZ using EasyOCR"
         }
-    mrz_info = manual_parse_mrz(mrz_string)
+    cleaned_mrz = extract_mrz_lines_from_text(mrz_string)
+    mrz_info = manual_parse_mrz(cleaned_mrz)
     if not mrz_info:
         return {
             "status": "REJECTED",
-            "message": "Failed to parse passport MRZ information from LLM"
+            "message": "Failed to parse passport MRZ information"
         }
-
-    # 2. Extract visual info and compare
-    visual_info = extract_passport_visual_info(image_path, api_key)
-    if not visual_info:
-        return {
-            "status": "REJECTED",
-            "message": "Failed to extract visual information from passport"
-        }
-        
-    mrz_vs_visual_checks = compare_selected_fields(mrz_info, visual_info)
-    mrz_checks = dict(mrz_info['validation_checks'])
-    trust_score_mrz = calculate_trust_score(mrz_checks)
-    trust_score_visual = calculate_trust_score(mrz_vs_visual_checks)
-    trust_score_combined = calculate_trust_score({**mrz_checks, **mrz_vs_visual_checks})
-    verification_result = determine_verification_result(trust_score_combined)
-
     return {
         "mrz_info": mrz_info,
-        "visual_info": visual_info,
-        "mrz_vs_visual_checks": mrz_vs_visual_checks,
-        "mrz_checks": mrz_checks,
-        "trust_score_mrz": trust_score_mrz,
-        "trust_score_visual": trust_score_visual,
-        "trust_score_combined": trust_score_combined,
-        "verification_result": verification_result
+        "status": "SUCCESS",
+        "message": "Successfully extracted and parsed MRZ"
     }
 
 # --- Composite check digit validation for TD1 and TD2 ---
