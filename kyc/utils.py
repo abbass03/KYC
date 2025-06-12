@@ -7,6 +7,8 @@ from config import UPLOAD_FOLDER, ALLOWED_EXTENSIONS
 import datetime
 import imghdr
 import mimetypes
+from pdf2image import convert_from_path
+import glob
 
 logger = logging.getLogger(__name__)
 def allowed_file(filename):
@@ -58,7 +60,10 @@ def create_response(success, data=None, error=None, status_code=200):
     return response, status_code
 
 def is_image_file(filepath):
-    """Check if file is a valid image (jpeg or png)."""
+    """Check if file is a valid image (jpeg, png, or pdf)."""
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == '.pdf':
+        return True
     return imghdr.what(filepath) in ['jpeg', 'png']
 
 def is_video_file(filepath):
@@ -74,3 +79,94 @@ def is_video_file(filepath):
         except Exception:
             return False
     return False
+
+def rotate_image(image, angle=0):
+    """
+    Rotate an image by the given angle (in degrees).
+    angle: 0, 90, 180, 270
+    """
+    if angle == 0:
+        return image
+    elif angle == 90:
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    elif angle == 180:
+        return cv2.rotate(image, cv2.ROTATE_180)
+    elif angle == 270:
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    else:
+        raise ValueError("Angle must be 0, 90, 180, or 270")
+
+def pdf_to_image(pdf_path):
+    """
+    Convert the first page of a PDF to a JPEG image.
+    Returns the path to the saved image.
+    """
+    images = convert_from_path(pdf_path, first_page=1, last_page=1)
+    if not images:
+        return None
+    image_path = pdf_path + "_page1.jpg"
+    images[0].save(image_path, 'JPEG')
+    return image_path
+
+def is_valid_pdf(filepath):
+    """
+    Check if file is a valid PDF by examining its header.
+    
+    Args:
+        filepath: Path to the file to check
+        
+    Returns:
+        bool: True if file is a valid PDF, False otherwise
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            header = f.read(5)
+            return header.startswith(b'%PDF-')
+    except Exception as e:
+        logger.error(f"Error validating PDF file {filepath}: {str(e)}")
+        return False
+
+def cleanup_temp_files(file_paths):
+    """
+    Clean up temporary files and their associated rotated/preprocessed versions.
+    
+    Args:
+        file_paths: List of file paths to clean up
+    """
+    try:
+        for path in file_paths:
+            if os.path.exists(path):
+                os.remove(path)
+                logger.info(f"Cleaned up file: {path}")
+            
+            # Clean up rotated versions
+            base_path = os.path.splitext(path)[0]
+            for angle in [0, 90, 180, 270]:
+                rotated_path = f"{base_path}_rotated_{angle}.jpg"
+                if os.path.exists(rotated_path):
+                    os.remove(rotated_path)
+                    logger.info(f"Cleaned up rotated file: {rotated_path}")
+            
+            # Clean up preprocessed versions
+            preprocessed_path = f"{base_path}_preprocessed.jpg"
+            if os.path.exists(preprocessed_path):
+                os.remove(preprocessed_path)
+                logger.info(f"Cleaned up preprocessed file: {preprocessed_path}")
+            
+            # Clean up PDF conversion files
+            if path.endswith('.pdf'):
+                converted_path = f"{path}_page1.jpg"
+                if os.path.exists(converted_path):
+                    os.remove(converted_path)
+                    logger.info(f"Cleaned up PDF conversion file: {converted_path}")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}")
+
+def cleanup_preprocessed_images(pattern="preprocessed_mrz_*.jpg"):
+    """Delete all preprocessed MRZ images matching the pattern."""
+    for file in glob.glob(pattern):
+        try:
+            os.remove(file)
+            logger.info(f"Deleted preprocessed image: {file}")
+        except Exception as e:
+            logger.warning(f"Could not delete {file}: {e}")

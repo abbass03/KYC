@@ -1,5 +1,4 @@
-﻿# Create .gitignore file
-echo "# Python bytecode and cache
+﻿# Python bytecode and cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -61,4 +60,4 @@ instance/
 
 # Temporary files
 tmp/
-temp/" > .gitignore
+temp/

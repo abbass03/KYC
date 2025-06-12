@@ -3,26 +3,32 @@ import numpy as np
 from PIL import Image
 from deepface import DeepFace
 import logging
+from config import API_CONFIG
 
 logger = logging.getLogger(__name__)
 
 class FaceMatcher:
     def __init__(self):
         self.face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.threshold = API_CONFIG['FACE_MATCH_THRESHOLD']
     
-    def is_match(self, face1, face2, threshold=0.6):
+    def is_match(self, face1, face2, threshold=None):
         """
         Compare two face images and determine if they match using DeepFace.
         
         Args:
             face1: First face image (numpy array)
             face2: Second face image (numpy array)
-            threshold: Matching threshold (default: 0.6)
+            threshold: Optional threshold override (defaults to config value)
             
         Returns:
             tuple: (is_match: bool, confidence_score: float)
         """
         try:
+            # Use threshold from config if not specified
+            if threshold is None:
+                threshold = API_CONFIG['FACE_MATCH_THRESHOLD']
+            
             # Input validation
             if face1 is None or face2 is None:
                 logger.error("One or both face images are None")
@@ -53,4 +59,4 @@ class FaceMatcher:
             
         except Exception as e:
             logger.error(f"Error in face matching: {str(e)}")
-            return False
+            return False, 0.0

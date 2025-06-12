@@ -16,7 +16,7 @@ API_CONFIG = {
 }
 
 # File upload configuration
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4','pdf'}
 MAX_CONTENT_LENGTH = 50 * 1024 * 1024  
 
 # Logging configuration

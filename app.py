@@ -20,10 +20,10 @@ from kyc.document import DocumentProcessor
 from kyc.utils import (
     allowed_file, save_uploaded_file, 
     save_debug_image, create_response,
-    is_image_file, is_video_file
+    is_image_file, is_video_file, pdf_to_image, is_valid_pdf
 )
 
-# Configure logging
+# Configure logging 
 logging.config.dictConfig(LOG_CONFIG)
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,7 @@ def validate_and_save_files(request):
     """Validate and save uploaded files, ensuring correct types."""
     required_files = ['id', 'passport', 'selfie', 'video']
     saved_files = {}
+    temp_files = []  # Track temporary files for cleanup
 
     for file_key in required_files:
         if file_key not in request.files:
@@ -126,20 +127,43 @@ def validate_and_save_files(request):
 
         try:
             saved_path = save_uploaded_file(file)
+            temp_files.append(saved_path)  # Track for cleanup
+
             # Content validation
             if file_key in ['id', 'passport', 'selfie']:
-                if not is_image_file(saved_path):
-                    logger.error(f"Uploaded file for {file_key} is not a valid image.")
-                    os.remove(saved_path)
-                    return None
+                ext = os.path.splitext(saved_path)[1].lower()
+                if ext == '.pdf':
+                    # Validate PDF
+                    if not is_valid_pdf(saved_path):
+                        logger.error(f"Invalid PDF file for {file_key}")
+                        cleanup_files(temp_files)
+                        return None
+                    
+                    # Convert PDF to image
+                    image_path = pdf_to_image(saved_path)
+                    if not image_path:
+                        logger.error(f"Failed to convert PDF for {file_key} to image.")
+                        cleanup_files(temp_files)
+                        return None
+                    
+                    saved_files[file_key] = image_path
+                    temp_files.append(image_path)  # Track converted image
+                else:
+                    if not is_image_file(saved_path):
+                        logger.error(f"Uploaded file for {file_key} is not a valid image.")
+                        cleanup_files(temp_files)
+                        return None
+                    saved_files[file_key] = saved_path
             elif file_key == 'video':
                 if not is_video_file(saved_path):
                     logger.error(f"Uploaded file for {file_key} is not a valid video.")
-                    os.remove(saved_path)
+                    cleanup_files(temp_files)
                     return None
-            saved_files[file_key] = saved_path
+                saved_files[file_key] = saved_path
+
         except Exception as e:
             logger.error(f"Failed to save {file_key}: {str(e)}")
+            cleanup_files(temp_files)
             return None
 
     return saved_files

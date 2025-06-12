@@ -6,6 +6,7 @@ import logging
 import json
 import string
 import unicodedata
+from kyc.utils import rotate_image, cleanup_preprocessed_images
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +35,7 @@ ICAO_COUNTRY_CODES = {
 }
 
 # Field mapping from MRZ keys to possible visual field names
+"""
 VISUAL_FIELD_MAP = {
     'country': ['Country'],
     'surname': ['Surname', 'Last Name'],
@@ -46,7 +48,8 @@ VISUAL_FIELD_MAP = {
     'personal_number': ['Personal Number', 'ID Number'],
     # Add more as needed
 }
-
+"""
+"""
 NATIONALITY_MAP = {
     'AFG': 'Afghan',
     'ALB': 'Albanian',
@@ -244,8 +247,8 @@ NATIONALITY_MAP = {
     'ZMB': 'Zambian',
     'ZWE': 'Zimbabwean'
 }
-
-
+"""
+"""
 FIELDS_TO_COMPARE = [
     # ('document_type', ['Type', 'Document Type', 'Passport Type']),
     ('given_names', ['Given Names', 'First Name']),
@@ -255,9 +258,11 @@ FIELDS_TO_COMPARE = [
     ('birth_date', ['Date of Birth', 'Birth Date']),
     ('sex', ['Sex', 'Gender']),
 ]
+"""
 
 def is_valid_country_code(code):
     return code in ICAO_COUNTRY_CODES
+
 
 def validate_date_format(date_str):
     try:
@@ -309,10 +314,14 @@ def validate_composite_check_td3(l2):
     composite_check_digit = l2[43]
     return validate_check_digit(composite_data, composite_check_digit)
 
+"""
 def normalize_key(key):
-    """Normalize keys for robust comparison (case-insensitive, ignore spaces/underscores)."""
+    Normalize keys for robust comparison (case-insensitive, ignore spaces/underscores).
     return re.sub(r'[\s_]+', '', key).lower()
 
+"""
+
+"""
 def normalize_field(value):
     if not isinstance(value, str):
         return value
@@ -321,9 +330,10 @@ def normalize_field(value):
     value = re.sub(r'\s+', '', value)
     value = value.translate(str.maketrans('', '', string.punctuation))
     return value.upper()
-
+"""
+"""
 def normalize_date(value):
-    """
+
     Converts various date formats to YYMMDD string for comparison.
     Handles:
       - '19 AUG 73'
@@ -331,7 +341,7 @@ def normalize_date(value):
       - '1973-08-19'
       - '730819'
       - etc.
-    """
+
     if not isinstance(value, str):
         return value
     value = value.strip().replace('/', ' ').replace('-', ' ').replace('.', ' ')
@@ -359,7 +369,8 @@ def normalize_date(value):
         except Exception:
             continue
     return value.upper().replace(" ", "")
-
+"""
+"""
 def normalize_nationality(value):
     val = normalize_field(value)
     # Try to map code to name or name to code
@@ -367,7 +378,8 @@ def normalize_nationality(value):
         if val in [code, normalize_field(name)]:
             return code
     return val
-
+"""
+"""
 def compare_selected_fields(mrz_info, visual_info):
     checks = {}
     visual_info_norm = {normalize_key(k): v for k, v in visual_info.items()}
@@ -433,35 +445,44 @@ def compare_selected_fields(mrz_info, visual_info):
         logger.warning(f"🧐 Comparing '{mrz_key}': Visual='{visual_val}' → '{v_val}' | MRZ='{mrz_val}' → '{m_val}'")
         checks[mrz_key] = (v_val == m_val)
     return checks
-
+"""
+"""
 def calculate_trust_score(results):
     # results: dict with boolean values for each check
     score = sum(results.values())
     max_score = len(results)
     return score / max_score  # Returns a value between 0 and 1
+"""
 
 def preprocess_mrz_region(image_path):
     img = cv2.imread(image_path)
     if img is None:
         logger.error("❌ Could not read the image for preprocessing.")
         return image_path
-    h = img.shape[0]
-    mrz = img[int(h*0.8):, :]
-   ## mrz = cv2.cvtColor(mrz, cv2.COLOR_BGR2GRAY)
-   ## mrz = cv2.equalizeHist(mrz)
-   ## mrz = cv2.adaptiveThreshold(mrz, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-   ## mrz = cv2.medianBlur(mrz, 3)
-    temp_path = "preprocessed_mrz.jpg"
-    cv2.imwrite(temp_path, mrz)
-    return temp_path
+    reader = easyocr.Reader(['en'])
+    for angle in [0, 90, 180, 270]:
+        rotated = rotate_image(img, angle)
+        h = rotated.shape[0]
+        # Crop the bottom 20% (or adjust as needed for your MRZ location)
+        mrz = rotated[int(h*0.8):, :]
+        temp_path = f"preprocessed_mrz_{angle}.jpg"
+        cv2.imwrite(temp_path, mrz)
+        # Try OCR here
+        results = reader.readtext(mrz, detail=0, paragraph=True)
+        mrz_text = "\n".join(results)
+        if "P<" in mrz_text and len(mrz_text.replace(" ", "").replace("\n", "")) > 80:
+            logger.info(f"MRZ found at rotation {angle}")
+            return temp_path
+    logger.error("No MRZ found in any rotation")
+    return image_path  # fallback
 
 def extract_mrz_easyocr(image_path):
     preprocessed_path = preprocess_mrz_region(image_path)
-    reader = easyocr.Reader(['en'])
     image = cv2.imread(preprocessed_path)
     if image is None:
         logger.error("❌ Could not read the image.")
         return None
+    reader = easyocr.Reader(['en'])
     results = reader.readtext(image, detail=0, paragraph=True)
     if results:
         logger.info("✅ MRZ text found by EasyOCR")
@@ -486,28 +507,18 @@ def split_mrz_line(mrz):
     line2 = mrz[44:88].ljust(44, '<')[:44]
     return line1, line2
 
-def extract_mrz_lines_from_text(text):
+def extract_mrz_single_line_from_text(text):
+    """
+    Extracts MRZ from the OCR output as a single string.
+    """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     mrz_candidates = []
     for line in lines:
         if line.startswith('P<') or (len(line) >= 30 and '<' in line):
             mrz_candidates.append(line.replace(' ', '').replace('\n', ''))
-    if len(mrz_candidates) == 1:
-        l = mrz_candidates[0]
-        if len(l) >= 60:
-            line1, line2 = split_mrz_line(l)
-            return line1 + '\n' + line2
-    if len(mrz_candidates) == 2:
-        line1 = mrz_candidates[0].ljust(44, '<')[:44]
-        line2 = mrz_candidates[1].ljust(44, '<')[:44]
-        return line1 + '\n' + line2
-    for i in range(len(mrz_candidates)-1):
-        if len(mrz_candidates[i]) == 44 and len(mrz_candidates[i+1]) == 44:
-            return mrz_candidates[i] + '\n' + mrz_candidates[i+1]
     if mrz_candidates:
-        line1 = mrz_candidates[0].ljust(44, '<')[:44]
-        line2 = mrz_candidates[1].ljust(44, '<')[:44] if len(mrz_candidates) > 1 else '<'*44
-        return line1 + '\n' + line2
+        # Return the longest candidate as it's likely to contain the complete MRZ
+        return max(mrz_candidates, key=len)
     return ''
 
 def manual_parse_mrz(mrz_string):
@@ -579,6 +590,85 @@ def manual_parse_mrz(mrz_string):
     except Exception as e:
         logger.error(f"Error in passport MRZ parsing: {str(e)}")
         return None
+    
+
+def format_mrz_date(date_str):
+    """
+    Convert MRZ date format (YYMMDD) to readable format (YYYY-MM-DD).
+    
+    Args:
+        date_str: Date string in YYMMDD format
+        
+    Returns:
+        str: Formatted date string (YYYY-MM-DD)
+    """
+    try:
+        if not date_str or len(date_str) != 6:
+            return None
+            
+        year = int(date_str[:2])
+        month = int(date_str[2:4])
+        day = int(date_str[4:6])
+        
+        # Determine century (assuming years 00-30 are 2000s, 31-99 are 1900s)
+        current_year = datetime.now().year % 100
+        full_year = 2000 + year if year <= current_year else 1900 + year
+        
+        # Validate date
+        try:
+            date_obj = datetime(full_year, month, day)
+            return date_obj.strftime('%Y-%m-%d')
+        except ValueError:
+            logger.error(f"Invalid date components: {year}, {month}, {day}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error formatting date {date_str}: {str(e)}")
+        return None
+
+def format_mrz_info(mrz_info):
+    """
+    Format MRZ information to make dates readable.
+    
+    Args:
+        mrz_info: Dictionary containing MRZ information
+        
+    Returns:
+        dict: Formatted MRZ information with readable dates
+    """
+    try:
+        if not mrz_info:
+            return None
+            
+        formatted_info = mrz_info.copy()
+        
+        # Format dates
+        birth_date_readable = format_mrz_date(mrz_info.get('birth_date'))
+        expiry_date_readable = format_mrz_date(mrz_info.get('expiry_date'))
+
+        if birth_date_readable:
+            formatted_info['birth_date_readable'] = birth_date_readable
+        if expiry_date_readable:
+            formatted_info['expiry_date_readable'] = expiry_date_readable
+        
+        # Add additional readable fields
+        formatted_info['document_type_readable'] = {
+            'P': 'Passport',
+            'V': 'Visa',
+            'I': 'ID Card'
+        }.get(formatted_info.get('document_type', ''), 'Unknown')
+        
+        formatted_info['sex_readable'] = {
+            'M': 'Male',
+            'F': 'Female',
+            '<': 'Unspecified'
+        }.get(formatted_info.get('sex', ''), 'Unknown')
+        
+        return formatted_info
+        
+    except Exception as e:
+        logger.error(f"Error formatting MRZ info: {str(e)}")
+        return mrz_info
 
 def process_passport(image_path, api_key=None):
     """
@@ -590,15 +680,24 @@ def process_passport(image_path, api_key=None):
             "status": "REJECTED",
             "message": "Failed to extract MRZ using EasyOCR"
         }
-    cleaned_mrz = extract_mrz_lines_from_text(mrz_string)
-    mrz_info = manual_parse_mrz(cleaned_mrz)
+        
+    # Use the new single-line extraction and parsing
+    cleaned_mrz = extract_mrz_single_line_from_text(mrz_string)
+    mrz_info = manual_parse_mrz_single_line(cleaned_mrz)
+    
     if not mrz_info:
         return {
             "status": "REJECTED",
             "message": "Failed to parse passport MRZ information"
         }
+        
+    # Format the MRZ information
+    formatted_mrz_info = format_mrz_info(mrz_info)
+    
+    # After all processing, clean up
+    cleanup_preprocessed_images()
     return {
-        "mrz_info": mrz_info,
+        "mrz_info": formatted_mrz_info,
         "status": "SUCCESS",
         "message": "Successfully extracted and parsed MRZ"
     }
@@ -624,3 +723,94 @@ def validate_composite_check_td2(l2):
     composite_check_digit = l2[35]
     return validate_check_digit(composite_data, composite_check_digit)
 
+def clean_mrz_string(mrz_string):
+    """
+    Clean the MRZ string:
+    - Uppercase
+    - Remove spaces/newlines
+    - Keep only valid MRZ characters (A-Z, 0-9, <)
+    - Start from the first 'P<' if present
+    """
+    mrz_string = mrz_string.upper()
+    mrz_string = mrz_string.replace(' ', '').replace('\n', '')
+    mrz_string = ''.join([c for c in mrz_string if c in string.ascii_uppercase + string.digits + '<'])
+    idx = mrz_string.find('P<')
+    if idx != -1:
+        mrz_string = mrz_string[idx:]
+    return mrz_string
+
+def manual_parse_mrz_single_line(mrz_string):
+    """
+    Parse a single-line MRZ string (TD3) and return structured information.
+    """
+    try:
+        mrz_string = clean_mrz_string(mrz_string)
+        if len(mrz_string) < 88:
+            logger.warning("MRZ string too short for TD3 format.")
+            return None
+        mrz_string = mrz_string[:88]  # Only use the first 88 chars
+
+        # TD3 format: 2 lines of 44 chars, but as one string
+        l1 = mrz_string[:44]
+        l2 = mrz_string[44:88]
+
+        if l1[0] != 'P':
+            logger.warning("Invalid document: Not a passport (first character should be 'P')")
+            return None
+
+        passport_number = l2[0:9].replace("<", "")
+        birth_date = l2[13:19]
+        expiry_date = l2[21:27]
+        personal_number_raw = l2[28:42]
+        personal_number_check_digit = l2[42]
+
+        if not validate_date_format(birth_date):
+            logger.warning("Invalid birth date format")
+            return None
+        if not validate_date_format(expiry_date):
+            logger.warning("Invalid expiry date format")
+            return None
+        if not validate_passport_number(passport_number):
+            logger.warning("Invalid passport number format")
+            return None
+
+        if personal_number_raw.replace('<', '') == '':
+            personal_number_check_result = True
+        else:
+            personal_number_check_result = validate_check_digit(personal_number_raw, personal_number_check_digit)
+
+        checks = {
+            'birth_date_format': validate_date_format(birth_date),
+            'expiry_date_format': validate_date_format(expiry_date),
+            'passport_number_format': validate_passport_number(passport_number),
+            'passport_number_check': validate_check_digit(l2[0:9], l2[9]),
+            'birth_date_check': validate_check_digit(l2[13:19], l2[19]),
+            'expiry_date_check': validate_check_digit(l2[21:27], l2[27]),
+            'personal_number_check': personal_number_check_result,
+            'composite_check': validate_composite_check_td3(l2),
+            'country_code_check': is_valid_country_code(l1[2:5])
+        }
+
+        logger.info(f"Passport MRZ validation results: {checks}")
+        return {
+            "mrz_type": "TD3",
+            "document_type": l1[0],
+            "country": l1[2:5],
+            "surname": l1[5:l1.find("<<")].replace("<", " ").strip(),
+            "given_names": l1[l1.find("<<")+2:].replace("<", " ").strip(),
+            "passport_number": passport_number,
+            "passport_number_check": l2[9],
+            "nationality": l2[10:13],
+            "birth_date": birth_date,
+            "birth_date_check": l2[19],
+            "sex": l2[20],
+            "expiry_date": expiry_date,
+            "expiry_date_check": l2[27],
+            "personal_number": l2[28:42].replace("<", ""),
+            "personal_number_check": l2[42],
+            "composite_check": l2[43],
+            "validation_checks": checks
+        }
+    except Exception as e:
+        logger.error(f"Error in passport MRZ parsing: {str(e)}")
+        return None

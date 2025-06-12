@@ -5,10 +5,13 @@ import pytesseract
 from deepface import DeepFace
 from kyc.Mrz_processing import process_passport
 import logging
-from .utils import normalize_image
+from .utils import normalize_image, cleanup_temp_files
 import json
 import re
 from PIL import Image
+from kyc.utils import rotate_image
+import concurrent.futures
+from functools import partial
 
 logger = logging.getLogger(__name__)
 
@@ -83,51 +86,133 @@ class DocumentProcessor:
 
     # Comment out compare_documents method and any call to it or use of document_comparison
 
-    def extract_face(self, image_path):
-        """
-        Extract face from any document (ID or passport).
-        
-        Args:
-            image_path: Path to the image file
-            
-        Returns:
-            numpy.ndarray: The extracted face, or None if no face is detected
-        """
+    def _process_rotation(self, img, angle, temp_dir):
+        """Process a single rotation angle."""
         try:
+            rotated = rotate_image(img, angle)
+            temp_path = os.path.join(temp_dir, f"rotated_{angle}.jpg")
+            cv2.imwrite(temp_path, rotated)
+            
             faces = DeepFace.extract_faces(
-                img_path=image_path,
+                img_path=temp_path,
                 detector_backend=self.detector_backend,
                 enforce_detection=False
             )
-
             if faces:
                 face = faces[0]["face"]
-                logger.info(f"Face extracted. Shape: {face.shape}")
+                logger.info(f"Face extracted at rotation {angle}. Shape: {face.shape}")
                 return normalize_image(face)
-            
-            logger.warning("No face detected in document")
+            return None
+        except Exception as e:
+            logger.error(f"Face extraction failed for rotation {angle}: {str(e)}")
+            return None
+
+    def extract_face(self, image_path):
+        """
+        Extract face from any document (ID or passport) using parallel processing.
+        """
+        temp_dir = os.path.join(os.path.dirname(image_path), 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_files = []
+
+        try:
+            img = cv2.imread(image_path)
+            if img is None:
+                logger.error("Failed to read image")
+                return None
+
+            # Create a partial function with the image pre-loaded
+            process_rotation = partial(self._process_rotation, img, temp_dir=temp_dir)
+
+            # Process rotations in parallel
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_to_angle = {
+                    executor.submit(process_rotation, angle): angle 
+                    for angle in [0, 90, 180, 270]
+                }
+                
+                # Get the first successful result
+                for future in concurrent.futures.as_completed(future_to_angle):
+                    result = future.result()
+                    if result is not None:
+                        return result
+
+            logger.warning("No face detected in any rotation")
             return None
 
         except Exception as e:
             logger.error(f"Face extraction failed: {str(e)}")
             return None
+        finally:
+            # Clean up temporary files
+            cleanup_temp_files([os.path.join(temp_dir, f) for f in os.listdir(temp_dir)])
+            try:
+                os.rmdir(temp_dir)
+            except Exception as e:
+                logger.error(f"Error removing temp directory: {str(e)}")
+
+    def _process_passport_rotation(self, img, angle, temp_dir):
+        """Process passport for a single rotation angle."""
+        try:
+            rotated = rotate_image(img, angle)
+            temp_path = os.path.join(temp_dir, f"rotated_passport_{angle}.jpg")
+            cv2.imwrite(temp_path, rotated)
+            result = process_passport(temp_path)
+            if result and result.get("status") == "SUCCESS":
+                return result
+            return None
+        except Exception as e:
+            logger.error(f"Passport processing failed for rotation {angle}: {str(e)}")
+            return None
 
     def process_passport(self, image_path, api_key=None):
         """
-        Process passport image to extract and verify information.
-        
-        Args:
-            image_path: Path to the passport image
-            api_key: API key for Gemini AI
-            
-        Returns:
-            dict: Passport processing results
+        Process passport image to extract and verify information using parallel processing.
         """
+        temp_dir = os.path.join(os.path.dirname(image_path), 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+
         try:
-            return process_passport(image_path)
+            img = cv2.imread(image_path)
+            if img is None:
+                logger.error("Failed to read passport image")
+                return {
+                    "status": "REJECTED",
+                    "message": "Failed to read passport image"
+                }
+
+            # Create a partial function with the image pre-loaded
+            process_rotation = partial(self._process_passport_rotation, img, temp_dir=temp_dir)
+
+            # Process rotations in parallel
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_to_angle = {
+                    executor.submit(process_rotation, angle): angle 
+                    for angle in [0, 90, 180, 270]
+                }
+                
+                # Get the first successful result
+                for future in concurrent.futures.as_completed(future_to_angle):
+                    result = future.result()
+                    if result is not None:
+                        return result
+
+            logger.error("Passport processing failed for all rotations")
+            return {
+                "status": "REJECTED",
+                "message": "Failed to process passport in any orientation"
+            }
+
         except Exception as e:
             logger.error(f"Passport processing failed: {str(e)}")
             return {
                 "status": "REJECTED",
                 "message": f"Failed to process passport: {str(e)}"
             }
+        finally:
+            # Clean up temporary files
+            cleanup_temp_files([os.path.join(temp_dir, f) for f in os.listdir(temp_dir)])
+            try:
+                os.rmdir(temp_dir)
+            except Exception as e:
+                logger.error(f"Error removing temp directory: {str(e)}")

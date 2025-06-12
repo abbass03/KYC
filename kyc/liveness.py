@@ -193,6 +193,3 @@ class LivenessDetector:
         except Exception as e:
             logger.error(f"Face extraction failed: {str(e)}")
             return None
-
-
-
